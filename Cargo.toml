@@ -1,0 +1,10 @@
+[package]
+name = "rchd-nbd"
+version = "0.1.0"
+authors = ["ksv1986 <ksv0x07c2@gmail.com>"]
+repository = "https://github.com/ksv1986/rchd-nbd"
+keywords = ["nbd", "network-block-device"]
+edition = "2018"
+
+[dependencies]
+nbd = "0.2.3"
