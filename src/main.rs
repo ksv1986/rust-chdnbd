@@ -1,9 +1,23 @@
 extern crate nbd;
 
-use std::io::{Cursor, Result};
+use std::io;
+use std::io::{Cursor, Read, Result, Seek, Write};
 use std::net::{TcpListener, TcpStream};
 
 use nbd::server::{handshake, transmission, Export};
+
+mod chd;
+use chd::Chd;
+
+// Sink any writes to Chd. Only needed to satisfy nbd::server::transmission()
+impl<T: Read + Seek> Write for Chd<T> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 fn handle_client(data: &mut [u8], mut stream: TcpStream) -> Result<()> {
     let e = Export {
@@ -12,8 +26,9 @@ fn handle_client(data: &mut [u8], mut stream: TcpStream) -> Result<()> {
         ..Default::default()
     };
     let pseudofile = Cursor::new(data);
+    let chd = chd::Chd::new(pseudofile);
     handshake(&mut stream, &e)?;
-    transmission(&mut stream, pseudofile)?;
+    transmission(&mut stream, chd)?;
     Ok(())
 }
 
