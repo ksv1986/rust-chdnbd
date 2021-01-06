@@ -1,4 +1,4 @@
-use std::convert::TryInto;
+use std::convert::TryFrom;
 use std::io;
 use std::io::{Read, Seek, SeekFrom};
 
@@ -18,12 +18,34 @@ fn invalid_data(msg: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
 
+fn read_be32(data: &[u8]) -> u32 {
+    assert_eq!(data.len(), 4);
+    (data[0] as u32) << 24 | (data[1] as u32) << 16 | (data[2] as u32) << 8 | data[3] as u32
+}
+
+fn read_be64(data: &[u8]) -> u64 {
+    assert_eq!(data.len(), 8);
+    (data[0] as u64) << 56
+        | (data[1] as u64) << 48
+        | (data[2] as u64) << 40
+        | (data[3] as u64) << 32
+        | (data[4] as u64) << 24
+        | (data[5] as u64) << 16
+        | (data[6] as u64) << 8
+        | data[7] as u64
+}
+
 pub struct Chd<T: Read + Seek> {
     io: T,
     initialized: bool,
     vers: Version,
     pos: i64,
     size: i64,
+
+    // internal state
+    compressors: [u32; 4],
+    hunkbytes: u32,
+    hunkcount: u32,
 }
 
 impl<T: Read + Seek> Chd<T> {
@@ -34,6 +56,9 @@ impl<T: Read + Seek> Chd<T> {
             vers: Version::default(),
             pos: 0,
             size: 0,
+            compressors: [0, 0, 0, 0],
+            hunkbytes: 0,
+            hunkcount: 0,
         }
     }
 
@@ -45,9 +70,28 @@ impl<T: Read + Seek> Chd<T> {
         &self.vers
     }
 
+    fn sanity_check(&self) -> io::Result<()> {
+        if self.hunkbytes < 1 || self.hunkbytes > 512 * 1024 {
+            return Err(invalid_data("wrong size of hunk"));
+        }
+        Ok(())
+    }
+
     fn read_header_v5(&mut self, data: &[u8]) -> io::Result<()> {
         self.vers = Version::V5;
-        self.size = i64::from_be_bytes(data[32..40].try_into().unwrap());
+        self.size = read_be64(&data[32..40]) as i64;
+        self.compressors[0] = read_be32(&data[16..20]);
+        self.compressors[1] = read_be32(&data[20..24]);
+        self.compressors[2] = read_be32(&data[24..28]);
+        self.compressors[3] = read_be32(&data[28..32]);
+        self.hunkbytes = read_be32(&data[56..60]);
+        let length = read_be32(&data[8..12]);
+        if length != 124 {
+            return Err(invalid_data("invalid v5 header length"));
+        }
+        self.sanity_check()?;
+        let hunkcount = self.size as u64 / self.hunkbytes as u64;
+        self.hunkcount = u32::try_from(hunkcount).map_err(|_| invalid_data("wrong hunk count"))?;
 
         self.initialized = true;
         Ok(())
@@ -55,8 +99,9 @@ impl<T: Read + Seek> Chd<T> {
 
     fn read_header_v4(&mut self, data: &[u8]) -> io::Result<()> {
         self.vers = Version::V4;
-        self.size = i64::from_be_bytes(data[28..36].try_into().unwrap());
-
+        self.size = read_be64(&data[28..36]) as i64;
+        self.compressors[0] = read_be32(&data[20..24]);
+        // TODO
         self.initialized = true;
         Ok(())
     }
@@ -75,7 +120,7 @@ impl<T: Read + Seek> Chd<T> {
             return Err(invalid_data("invalid magic"));
         }
 
-        match u32::from_be_bytes(data[12..16].try_into().unwrap()) {
+        match read_be32(&data[12..16]) {
             5 => self.read_header_v5(&data),
             4 => self.read_header_v4(&data),
             _ => Err(invalid_data("unsupported version")),
