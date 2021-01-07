@@ -173,10 +173,11 @@ impl<T: Read + Seek> Chd<T> {
     }
 
     fn decompress_v5_map(&mut self, mapoffset: u64) -> io::Result<()> {
+        const MAP_ENTRY_SIZE: usize = 12;
         let hunkcount = self.hunkcount as usize;
         if self.compressors[0] == 0 {
             // uncompressed
-            self.map = vec![0; 12 * hunkcount];
+            self.map = vec![0; MAP_ENTRY_SIZE * hunkcount];
             return self.io.read_exact(self.map.as_mut_slice());
         }
 
@@ -198,7 +199,7 @@ impl<T: Read + Seek> Chd<T> {
         huffman.import_tree_rle(&mut bits)?;
 
         let hunkcount = self.hunkcount as usize;
-        self.map = vec![0u8; 12 * hunkcount];
+        self.map = vec![0u8; MAP_ENTRY_SIZE * hunkcount];
 
         // first decode the compression types
         let mut repcount = 0;
@@ -220,7 +221,7 @@ impl<T: Read + Seek> Chd<T> {
                     }
                 }
             }
-            let compression = &mut self.map[hunknum * 12];
+            let compression = &mut self.map[hunknum * MAP_ENTRY_SIZE];
             *compression = lastcomp;
         }
 
@@ -232,7 +233,7 @@ impl<T: Read + Seek> Chd<T> {
             let mut offset = curoffset;
             let mut length = 0;
             let mut crc = 0;
-            let mapentry = &mut self.map[hunknum * 12..(hunknum + 1) * 12];
+            let mapentry = &mut self.map[hunknum * MAP_ENTRY_SIZE..(hunknum + 1) * MAP_ENTRY_SIZE];
             let compression = &mut mapentry[0];
             match *compression {
                 // base types
