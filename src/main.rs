@@ -6,7 +6,11 @@ use std::net::{TcpListener, TcpStream};
 
 use nbd::server::{handshake, transmission, Export};
 
+mod bitstream;
 mod chd;
+mod huffman;
+mod utils;
+
 use chd::Chd;
 
 // Sink any writes to Chd. Only needed to satisfy nbd::server::transmission()
