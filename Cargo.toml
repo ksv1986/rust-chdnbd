@@ -7,4 +7,5 @@ keywords = ["nbd", "network-block-device"]
 edition = "2018"
 
 [dependencies]
+crc16 = "0.4"
 nbd = "0.2"

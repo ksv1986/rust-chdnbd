@@ -2,6 +2,7 @@ use std::convert::TryFrom;
 use std::io;
 use std::io::{Read, Seek, SeekFrom};
 
+extern crate crc16;
 use crate::bitstream::BitReader;
 use crate::huffman::Huffman;
 use crate::utils::*;
@@ -48,6 +49,11 @@ impl Default for Version {
     fn default() -> Self {
         Version::V5
     }
+}
+
+fn read_be16(data: &[u8]) -> u16 {
+    assert_eq!(data.len(), 2);
+    (data[0] as u16) << 8 | data[1] as u16
 }
 
 fn read_be32(data: &[u8]) -> u32 {
@@ -289,10 +295,11 @@ impl<T: Read + Seek> Chd<T> {
             write_be48(&mut mapentry[4..10], offset);
             write_be16(&mut mapentry[10..12], crc);
         }
-        //if bits.overflow() {
-        //    return Err(invalid_data("compressed map is too small"));
-        //}
-
+        let crc = read_be16(&maphdr[10..12]);
+        let calc = crc16::State::<crc16::CCITT_FALSE>::calculate(&self.map);
+        if crc != calc {
+            return Err(invalid_data("map decompression failed"));
+        }
         Ok(())
     }
 

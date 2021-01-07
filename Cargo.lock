@@ -7,6 +7,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08c48aae112d48ed9f069b33538ea9e3e90aa263cfa3d1c24309612b1f7472de"
 
 [[package]]
+name = "crc16"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "338089f42c427b86394a5ee60ff321da23a5c89c9d89514c829687b26359fcff"
+
+[[package]]
 name = "nbd"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -19,5 +25,6 @@ dependencies = [
 name = "rchd-nbd"
 version = "0.1.0"
 dependencies = [
+ "crc16",
  "nbd",
 ]
