@@ -7,11 +7,8 @@ use crate::bitstream::BitReader;
 use crate::huffman::Huffman;
 use crate::utils::*;
 
-#[derive(Debug, PartialEq)]
-pub enum Version {
-    V4 = 4,
-    V5 = 5,
-}
+const V4: u32 = 4;
+const V5: u32 = 5;
 
 /* codec #0
  * these types are live when running */
@@ -45,11 +42,22 @@ const COMPRESSION_PARENT_0: u8 = 12;
 /* same as the last COMPRESSION_PARENT block + 1 */
 const COMPRESSION_PARENT_1: u8 = 13;
 
-impl Default for Version {
-    fn default() -> Self {
-        Version::V5
-    }
+const COMPRESSION_NUM: usize = 7;
+
+const MAP_ENTRY_SIZE: usize = 12;
+
+const fn make_tag(data: [char; 4]) -> u32 {
+    (data[0] as u32) << 24 | (data[1] as u32) << 16 | (data[2] as u32) << 8 | data[3] as u32
 }
+
+const CHD_CODEC_ZLIB: u32 = make_tag(['z', 'l', 'i', 'b']);
+const CHD_CODEC_HUFF: u32 = make_tag(['h', 'u', 'f', 'f']);
+const CHD_CODEC_LZMA: u32 = make_tag(['l', 'z', 'm', 'a']);
+const CHD_CODEC_FLAC: u32 = make_tag(['f', 'l', 'a', 'c']);
+// general codecs with CD frontend
+const CHD_CODEC_CD_ZLIB: u32 = make_tag(['c', 'd', 'z', 'l']);
+const CHD_CODEC_CD_LZMA: u32 = make_tag(['c', 'd', 'l', 'z']);
+const CHD_CODEC_CD_FLAC: u32 = make_tag(['c', 'd', 'f', 'l']);
 
 fn read_be16(data: &[u8]) -> u16 {
     assert_eq!(data.len(), 2);
@@ -135,7 +143,7 @@ fn write_be48(data: &mut [u8], val: u64) {
 pub struct Chd<T: Read + Seek> {
     io: T,
     initialized: bool,
-    vers: Version,
+    vers: u32,
     pos: i64,
     size: i64,
 
@@ -152,7 +160,7 @@ impl<T: Read + Seek> Chd<T> {
         Chd {
             io: io,
             initialized: false,
-            vers: Version::default(),
+            vers: 0,
             pos: 0,
             size: 0,
             compressors: [0, 0, 0, 0],
@@ -167,8 +175,65 @@ impl<T: Read + Seek> Chd<T> {
         self.size as u64
     }
 
-    pub fn version(&self) -> &Version {
-        &self.vers
+    pub fn hunk_size(&self) -> u32 {
+        self.hunkbytes
+    }
+
+    pub fn hunk_count(&self) -> u32 {
+        self.hunkcount
+    }
+
+    pub fn version(&self) -> u32 {
+        self.vers
+    }
+
+    pub fn compression_name(&self, compr: u8) -> &'static str {
+        match compr {
+            COMPRESSION_TYPE_0 => self.codec_name(0).unwrap_or("Codec #0"),
+            COMPRESSION_TYPE_1 => self.codec_name(1).unwrap_or("Codec #1"),
+            COMPRESSION_TYPE_2 => self.codec_name(2).unwrap_or("Codec #2"),
+            COMPRESSION_TYPE_3 => self.codec_name(3).unwrap_or("Codec #3"),
+            COMPRESSION_NONE => "Uncompressed",
+            COMPRESSION_SELF => "Self",
+            COMPRESSION_PARENT => "Parent",
+            _ => "Invalid",
+        }
+    }
+
+    pub fn codec_name(&self, i: usize) -> Option<&'static str> {
+        if i == 0 && self.compressors[0] == 0 {
+            return Some("None");
+        }
+        if i < 4 {
+            match self.compressors[i] {
+                0 => None,
+                CHD_CODEC_HUFF => Some("Huffman"),
+                CHD_CODEC_ZLIB => Some("zlib"),
+                CHD_CODEC_LZMA => Some("LZMA"),
+                CHD_CODEC_FLAC => Some("FLAC"),
+                CHD_CODEC_CD_ZLIB => Some("CD zlib"),
+                CHD_CODEC_CD_LZMA => Some("CD LZMA"),
+                CHD_CODEC_CD_FLAC => Some("CD FLAC"),
+                _ => Some("Unknown"),
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn compression_distribution(&self) -> [u32; COMPRESSION_NUM] {
+        let mut distr = [0; COMPRESSION_NUM];
+        if self.compressors[0] == 0 {
+            distr[COMPRESSION_NONE as usize] = self.hunkcount;
+        } else {
+            for hunk in 0..self.hunkcount {
+                let compressor = self.map[hunk as usize * MAP_ENTRY_SIZE] as usize;
+                if compressor < COMPRESSION_NUM {
+                    distr[compressor] += 1;
+                }
+            }
+        }
+        distr
     }
 
     fn sanity_check(&self) -> io::Result<()> {
@@ -179,7 +244,6 @@ impl<T: Read + Seek> Chd<T> {
     }
 
     fn decompress_v5_map(&mut self, mapoffset: u64) -> io::Result<()> {
-        const MAP_ENTRY_SIZE: usize = 12;
         let hunkcount = self.hunkcount as usize;
         if self.compressors[0] == 0 {
             // uncompressed
@@ -304,7 +368,6 @@ impl<T: Read + Seek> Chd<T> {
     }
 
     fn read_header_v5(&mut self, data: &[u8]) -> io::Result<()> {
-        self.vers = Version::V5;
         self.size = read_be64(&data[32..40]) as i64;
         self.compressors[0] = read_be32(&data[16..20]);
         self.compressors[1] = read_be32(&data[20..24]);
@@ -327,7 +390,6 @@ impl<T: Read + Seek> Chd<T> {
     }
 
     fn read_header_v4(&mut self, data: &[u8]) -> io::Result<()> {
-        self.vers = Version::V4;
         self.size = read_be64(&data[28..36]) as i64;
         self.compressors[0] = read_be32(&data[20..24]);
         // TODO
@@ -349,9 +411,10 @@ impl<T: Read + Seek> Chd<T> {
             return Err(invalid_data("invalid magic"));
         }
 
-        match read_be32(&data[12..16]) {
-            5 => self.read_header_v5(&data),
-            4 => self.read_header_v4(&data),
+        self.vers = read_be32(&data[12..16]);
+        match self.vers {
+            V5 => self.read_header_v5(&data),
+            V4 => self.read_header_v4(&data),
             _ => Err(invalid_data("unsupported version")),
         }
     }
@@ -402,7 +465,7 @@ mod tests {
             Chd::new(d)
         };
         c.read_header().unwrap();
-        assert_eq!(c.version(), &Version::V5);
+        assert_eq!(c.version(), V5);
         assert_eq!(c.len(), 40_960_000);
         assert_eq!(c.seek(SeekFrom::Current(0)).unwrap(), 0);
         assert_eq!(c.seek(SeekFrom::End(0)).unwrap(), c.len());
