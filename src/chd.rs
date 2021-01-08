@@ -265,7 +265,7 @@ impl<T: Read + Seek> Chd<T> {
         self.io.read_exact(comprmap.as_mut_slice())?;
 
         let mut bits = BitReader::new(&comprmap);
-        let mut huffman = Huffman::new();
+        let mut huffman = Huffman::new(16, 8);
         huffman.import_tree_rle(&mut bits)?;
 
         let hunkcount = self.hunkcount as usize;

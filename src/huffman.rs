@@ -6,9 +6,6 @@ type LookupValue = u16;
 type ValueSize = u8;
 type NodeIndex = u32;
 
-const NUM_CODES: NodeIndex = 16;
-const MAX_BITS: ValueSize = 8;
-
 const fn make_lookup(code: usize, bits: ValueSize) -> LookupValue {
     ((code as LookupValue) << 5) | ((bits as LookupValue) & 0x1f)
 }
@@ -26,15 +23,15 @@ fn set_num_bits(nodes: &mut [Node], curnode: u32, nodebits: u32) {
 pub struct Huffman {
     numcodes: NodeIndex,
     maxbits: ValueSize,
-    lookup: [LookupValue; 1 << MAX_BITS],
+    lookup: Vec<LookupValue>,
 }
 
 impl Huffman {
-    pub fn new() -> Self {
+    pub fn new(numcodes: NodeIndex, maxbits: ValueSize) -> Self {
         Huffman {
-            numcodes: NUM_CODES,
-            maxbits: MAX_BITS,
-            lookup: [0; 1 << MAX_BITS],
+            numcodes,
+            maxbits,
+            lookup: vec![0; 1 << maxbits],
         }
     }
 
@@ -49,10 +46,13 @@ impl Huffman {
     }
 
     pub fn import_tree_rle(&mut self, stream: &mut BitReader) -> io::Result<()> {
-        let mut nodes = [Node {
-            bits: 0,
-            numbits: 0,
-        }; NUM_CODES as usize];
+        let mut nodes = vec![
+            Node {
+                bits: 0,
+                numbits: 0,
+            };
+            self.numcodes as usize
+        ];
         self.read_num_bits(stream, &mut nodes)?;
         self.assign_canonical_codes(&mut nodes)?;
         self.build_lookup_table(&nodes);
