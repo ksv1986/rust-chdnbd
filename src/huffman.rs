@@ -10,7 +10,7 @@ const fn make_lookup(code: usize, bits: ValueSize) -> LookupValue {
     ((code as LookupValue) << 5) | ((bits as LookupValue) & 0x1f)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct Node {
     bits: ValueSize,    // bits used to encode the node
     numbits: ValueSize, // number of bits needed for this node
@@ -46,20 +46,94 @@ impl Huffman {
     }
 
     pub fn import_tree_rle(&mut self, stream: &mut BitReader) -> io::Result<()> {
-        let mut nodes = vec![
-            Node {
-                bits: 0,
-                numbits: 0,
-            };
-            self.numcodes as usize
-        ];
-        self.read_num_bits(stream, &mut nodes)?;
+        let mut nodes = self.make_nodes();
+        self.read_numbits_rle(stream, &mut nodes)?;
         self.assign_canonical_codes(&mut nodes)?;
         self.build_lookup_table(&nodes);
         Ok(())
     }
 
-    fn read_num_bits(&mut self, stream: &mut BitReader, nodes: &mut [Node]) -> io::Result<()> {
+    pub fn import_tree_huffman(&mut self, stream: &mut BitReader) -> io::Result<()> {
+        let mut smallhuff = Huffman::new(24, 6);
+        let mut smallnodes = smallhuff.make_nodes();
+        smallhuff.read_numbits_small(stream, &mut smallnodes);
+        smallhuff.assign_canonical_codes(&mut smallnodes)?;
+        smallhuff.build_lookup_table(&smallnodes);
+
+        let mut nodes = self.make_nodes();
+        self.read_numbits_huffman(&smallhuff, stream, &mut nodes)?;
+        self.assign_canonical_codes(&mut nodes)?;
+        self.build_lookup_table(&nodes);
+        Ok(())
+    }
+
+    fn make_nodes(&self) -> Vec<Node> {
+        vec![Node::default(); self.numcodes as usize]
+    }
+
+    fn read_numbits_small(&mut self, stream: &mut BitReader, smallnodes: &mut [Node]) {
+        smallnodes[0].numbits = stream.read(3) as u8;
+        let mut count = 0;
+        let start = stream.read(3) as usize + 1;
+        for index in 1..self.numcodes as usize {
+            if index < start || count == 7 {
+                smallnodes[index].numbits = 0;
+            } else {
+                count = stream.read(3) as usize;
+                smallnodes[index].numbits = match count {
+                    7 => 0,
+                    v => v as u8,
+                };
+            }
+        }
+    }
+
+    fn read_numbits_huffman(
+        &mut self,
+        smallhuff: &Huffman,
+        stream: &mut BitReader,
+        nodes: &mut [Node],
+    ) -> io::Result<()> {
+        let rlefullbits = {
+            let mut bits = 0;
+            let mut temp = self.numcodes - 9;
+            while temp > 0 {
+                temp >>= 1;
+                bits += 1;
+            }
+            bits
+        };
+
+        let numcodes = self.numcodes as usize;
+        let mut curcode = 0;
+        let mut last = 0;
+        while curcode < numcodes {
+            let nodebits = smallhuff.decode_one(stream) as u8;
+            if nodebits != 0 {
+                last = nodebits - 1;
+                nodes[curcode].numbits = last;
+                curcode += 1;
+                continue;
+            }
+
+            let mut count = stream.read(3) + 2;
+            if count == 7 + 2 {
+                count += stream.read(rlefullbits);
+            }
+            while count > 0 && curcode < numcodes {
+                nodes[curcode].numbits = last;
+                curcode += 1;
+                count -= 1;
+            }
+        }
+        // make sure we ended up with the right number
+        if curcode != numcodes {
+            return Err(invalid_data("wrong number or huffman codes"));
+        }
+        Ok(())
+    }
+
+    fn read_numbits_rle(&mut self, stream: &mut BitReader, nodes: &mut [Node]) -> io::Result<()> {
         // bits per entry depends on the maxbits
         let numbits = match self.maxbits {
             0..=7 => 3,
