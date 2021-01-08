@@ -72,8 +72,7 @@ fn main() -> io::Result<()> {
     let mut file = File::open(path)?;
     let file_size = file.seek(SeekFrom::End(0))?;
 
-    let mut chd = Chd::new(file);
-    chd.read_header()?;
+    let mut chd = Chd::open(file)?;
     print_summary(&chd, file_size);
     let size = chd.len();
 

@@ -142,7 +142,6 @@ fn write_be48(data: &mut [u8], val: u64) {
 
 pub struct Chd<T: Read + Seek> {
     io: T,
-    initialized: bool,
     vers: u32,
     pos: i64,
     size: i64,
@@ -156,10 +155,9 @@ pub struct Chd<T: Read + Seek> {
 }
 
 impl<T: Read + Seek> Chd<T> {
-    pub fn new(io: T) -> Chd<T> {
-        Chd {
+    pub fn open(io: T) -> io::Result<Chd<T>> {
+        let mut chd = Chd {
             io: io,
-            initialized: false,
             vers: 0,
             pos: 0,
             size: 0,
@@ -168,7 +166,9 @@ impl<T: Read + Seek> Chd<T> {
             hunkcount: 0,
             unitbytes: 0,
             map: Vec::new(),
-        }
+        };
+        chd.read_header()?;
+        Ok(chd)
     }
 
     pub fn len(&self) -> u64 {
@@ -385,7 +385,6 @@ impl<T: Read + Seek> Chd<T> {
         let mapoffset = read_be64(&data[40..48]);
         self.decompress_v5_map(mapoffset)?;
 
-        self.initialized = true;
         Ok(())
     }
 
@@ -393,15 +392,10 @@ impl<T: Read + Seek> Chd<T> {
         self.size = read_be64(&data[28..36]) as i64;
         self.compressors[0] = read_be32(&data[20..24]);
         // TODO
-        self.initialized = true;
         Ok(())
     }
 
-    pub fn read_header(&mut self) -> io::Result<()> {
-        if self.initialized {
-            return Ok(());
-        }
-
+    fn read_header(&mut self) -> io::Result<()> {
         let mut data = [0u8; 124];
 
         self.io.seek(SeekFrom::Start(0))?;
@@ -422,14 +416,12 @@ impl<T: Read + Seek> Chd<T> {
 
 impl<T: Read + Seek> Read for Chd<T> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.read_header()?;
         Err(io::Error::new(io::ErrorKind::Other, "not implemented"))
     }
 }
 
 impl<T: Read + Seek> Seek for Chd<T> {
     fn seek(&mut self, sf: SeekFrom) -> io::Result<u64> {
-        self.read_header()?;
         match sf {
             SeekFrom::Start(x) => {
                 self.pos = x as i64;
@@ -462,9 +454,8 @@ mod tests {
         let mut c = {
             //let d = std::fs::File::open("raycris.chd").unwrap();
             let d = io::Cursor::new(include_bytes!("../raycris.chd"));
-            Chd::new(d)
+            Chd::open(d).unwrap()
         };
-        c.read_header().unwrap();
         assert_eq!(c.version(), V5);
         assert_eq!(c.len(), 40_960_000);
         assert_eq!(c.seek(SeekFrom::Current(0)).unwrap(), 0);
