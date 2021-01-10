@@ -319,6 +319,7 @@ impl<T: Read + Seek> Chd<T> {
                 CHD_CODEC_LZMA | CHD_CODEC_CD_LZMA => {
                     *d = Some(Box::new(decompress::Lzma::new(chd.header.hunkbytes)?))
                 }
+                CHD_CODEC_FLAC => *d = Some(Box::new(decompress::Flac::new())),
                 x => *d = Some(Box::new(decompress::Unknown::new(x))),
             }
         }
@@ -410,8 +411,13 @@ impl<T: Read + Seek> Chd<T> {
         }
     }
 
-    fn read_hunk(&mut self, hunknum: usize, buf: &mut [u8]) -> io::Result<()> {
-        let (compression, offset, length) = self.map.locate(hunknum);
+    fn read_hunk_at(
+        &mut self,
+        compression: u8,
+        offset: u64,
+        length: u32,
+        buf: &mut [u8],
+    ) -> io::Result<()> {
         match compression {
             COMPRESSION_NONE => self.io.read_at(offset, buf),
             COMPRESSION_SELF => self.read_hunk(offset as usize, buf),
@@ -427,9 +433,19 @@ impl<T: Read + Seek> Chd<T> {
         }
     }
 
+    fn read_hunk(&mut self, hunknum: usize, buf: &mut [u8]) -> io::Result<()> {
+        let (compression, offset, length) = self.map.locate(hunknum);
+        self.read_hunk_at(compression, offset, length, buf)
+    }
+
     fn validate_hunk(&mut self, hunknum: usize) -> io::Result<()> {
+        let (compression, offset, length) = self.map.locate(hunknum);
+        if compression == COMPRESSION_SELF {
+            return self.validate_hunk(offset as usize);
+        }
+
         let mut buf = vec![0; self.header.hunkbytes as usize];
-        self.read_hunk(hunknum, buf.as_mut_slice())?;
+        self.read_hunk_at(compression, offset, length, buf.as_mut_slice())?;
         match self.map.validate(hunknum, &buf) {
             true => Ok(()),
             false => Err(invalid_data("hunk validation failed")),
@@ -473,6 +489,24 @@ impl<T: Read + Seek> Seek for Chd<T> {
 mod tests {
     use super::*;
 
+    fn validate_hunk<T: Read + Seek>(c: &mut Chd<T>, i: usize) {
+        match c.validate_hunk(i) {
+            Ok(()) => (),
+            Err(e) => {
+                let (compression, offset, length) = c.map.locate(i);
+                panic!(
+                    "hunk#{} at {} len {} compr {}({}) validation failed {}",
+                    i,
+                    offset,
+                    length,
+                    compression,
+                    c.compression_name(compression),
+                    e
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_basic() {
         let mut c = {
@@ -485,14 +519,18 @@ mod tests {
         assert_eq!(c.seek(SeekFrom::Current(0)).unwrap(), 0);
         assert_eq!(c.seek(SeekFrom::End(0)).unwrap(), c.len());
         let hunks = [
-            0, // lzma
-            // 9,  // self
+            0,    // lzma
+            2,    // flac
+            9,    // self
             63,   // zlib
             322,  // huffman
             3999, // uncompressed
         ];
         for i in hunks.iter() {
-            c.validate_hunk(*i).unwrap();
+            validate_hunk(&mut c, *i);
+        }
+        for i in 0..c.hunk_count() as usize {
+            validate_hunk(&mut c, i);
         }
     }
 }

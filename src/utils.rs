@@ -87,6 +87,11 @@ pub fn write_be48(data: &mut [u8], val: u64) {
     write_be(data, 6, val)
 }
 
+pub fn write_le16(data: &mut [u8], val: u16) {
+    data[0] = val as u8;
+    data[1] = (val >> 8) as u8;
+}
+
 pub trait ReadAt {
     fn read_at(&mut self, offset: u64, data: &mut [u8]) -> io::Result<()>;
 }

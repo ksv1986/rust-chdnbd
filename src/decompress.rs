@@ -1,7 +1,10 @@
+extern crate claxon;
 extern crate inflate;
 
+use claxon::frame::FrameReader;
+use claxon::input::BufferedReader;
 use std::io;
-use std::io::Write;
+use std::io::{Cursor, Write};
 
 use crate::bitstream::BitReader;
 use crate::huffman;
@@ -106,5 +109,54 @@ impl Decompressor for Lzma {
             0 => Ok(()),
             _ => Err(invalid_data("lzma decompression failed")),
         }
+    }
+}
+
+pub struct Flac {}
+
+impl Flac {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl Decompressor for Flac {
+    fn decompress(&mut self, src: &[u8], dest: &mut [u8]) -> io::Result<()> {
+        let write_endian = match src[0] {
+            b'L' => write_le16,
+            b'B' => write_be16,
+            x => {
+                return Err(invalid_data_owned(format!(
+                    "invalid flac endianness {:x}",
+                    x
+                )))
+            }
+        };
+        let input = Cursor::new(&src[1..]);
+        let buffered_reader = BufferedReader::new(input);
+        let mut frame_reader = FrameReader::new(buffered_reader);
+        let frame_size = 4; // 16bit stereo
+        let num_frames = dest.len() / frame_size;
+        let buffer = vec![0; num_frames];
+        let result = frame_reader
+            .read_next_or_eof(buffer)
+            .map_err(|_| invalid_data("failed to decode frame"))?;
+        let block = result.ok_or(invalid_data("flac data is too short"))?;
+        if block.duration() != num_frames as u32 {
+            return Err(invalid_data(
+                "decoded flac duration doesn't match number of frames in hunk",
+            ));
+        }
+        if block.channels() != 2 {
+            return Err(invalid_data_owned(format!(
+                "expected stereo, but got {} channel samples",
+                block.channels()
+            )));
+        }
+        for (i, (sl, sr)) in block.stereo_samples().enumerate() {
+            write_endian(&mut dest[i * frame_size + 0..i * frame_size + 2], sl as u16);
+            write_endian(&mut dest[i * frame_size + 2..i * frame_size + 4], sr as u16);
+        }
+        Ok(())
     }
 }
