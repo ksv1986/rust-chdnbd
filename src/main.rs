@@ -9,6 +9,7 @@ use nbd::server::{handshake, transmission, Export};
 
 mod bitstream;
 mod chd;
+mod decompress;
 mod huffman;
 mod utils;
 

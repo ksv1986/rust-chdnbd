@@ -5,6 +5,8 @@ use std::io;
 use std::io::{Read, Seek, SeekFrom};
 
 use crate::bitstream::BitReader;
+use crate::decompress;
+use crate::decompress::Decompressor;
 use crate::huffman::Huffman;
 use crate::utils::*;
 
@@ -122,7 +124,7 @@ impl Header {
 trait Map {
     fn compression(&self, hunknum: usize) -> u8;
     fn validate(&self, hunknum: usize, buf: &[u8]) -> bool;
-    fn locate(&self, hunknum: usize) -> (u64, u32);
+    fn locate(&self, hunknum: usize) -> (u8, u64, u32);
 }
 
 struct Map5 {
@@ -141,11 +143,12 @@ impl Map for Map5 {
         crc == calc
     }
 
-    fn locate(&self, hunknum: usize) -> (u64, u32) {
+    fn locate(&self, hunknum: usize) -> (u8, u64, u32) {
         let offs = Map5::offset(hunknum);
+        let compression = self.map[offs];
         let offset = read_be48(&self.map[offs + 4..offs + 10]);
-        let length = read_be24(&self.map[offs + 1..offs + 3]);
-        (offset, length)
+        let length = read_be24(&self.map[offs + 1..offs + 4]);
+        (compression, offset, length)
     }
 }
 
@@ -289,6 +292,7 @@ pub struct Chd<T: Read + Seek> {
     io: T,
     header: Header,
     map: Box<dyn Map>,
+    decompress: [Option<Box<dyn Decompressor>>; 4],
 }
 
 impl<T: Read + Seek> Chd<T> {
@@ -298,12 +302,21 @@ impl<T: Read + Seek> Chd<T> {
             V5 => Map5::read(&mut io, &header)?,
             _ => return Err(invalid_data("unsupported map version")),
         };
-        Ok(Self {
+        let mut chd = Self {
             pos: 0,
             io,
             header,
             map: Box::new(map),
-        })
+            decompress: [None, None, None, None],
+        };
+        for (i, d) in chd.decompress.iter_mut().enumerate() {
+            match chd.header.compressors[i] {
+                0 => (),
+                CHD_CODEC_HUFF => *d = Some(Box::new(decompress::Huffman::new())),
+                x => *d = Some(Box::new(decompress::Unknown::new(x))),
+            }
+        }
+        Ok(chd)
     }
 
     pub fn len(&self) -> u64 {
@@ -371,6 +384,51 @@ impl<T: Read + Seek> Chd<T> {
         }
         distr
     }
+
+    fn decompress_hunk(
+        &mut self,
+        offset: u64,
+        length: u32,
+        index: usize,
+        buf: &mut [u8],
+    ) -> io::Result<()> {
+        if self.decompress[index].is_some() {
+            let mut compbuf = vec![0; length as usize];
+            self.io.read_at(offset, compbuf.as_mut_slice())?;
+            self.decompress[index]
+                .as_deref_mut()
+                .unwrap()
+                .decompress(&compbuf, buf)
+        } else {
+            Err(invalid_data("no decompressor"))
+        }
+    }
+
+    fn read_hunk(&mut self, hunknum: usize, buf: &mut [u8]) -> io::Result<()> {
+        let (compression, offset, length) = self.map.locate(hunknum);
+        match compression {
+            COMPRESSION_NONE => self.io.read_at(offset, buf),
+            COMPRESSION_SELF => self.read_hunk(offset as usize, buf),
+            COMPRESSION_TYPE_0 | COMPRESSION_TYPE_1 | COMPRESSION_TYPE_2 | COMPRESSION_TYPE_3 => {
+                self.decompress_hunk(
+                    offset,
+                    length,
+                    (compression - COMPRESSION_TYPE_0) as usize,
+                    buf,
+                )
+            }
+            x => Err(invalid_data_owned(format!("unsupported compression {}", x))),
+        }
+    }
+
+    fn validate_hunk(&mut self, hunknum: usize) -> io::Result<()> {
+        let mut buf = vec![0; self.header.hunkbytes as usize];
+        self.read_hunk(hunknum, buf.as_mut_slice())?;
+        match self.map.validate(hunknum, &buf) {
+            true => Ok(()),
+            false => Err(invalid_data("hunk validation failed")),
+        }
+    }
 }
 
 impl<T: Read + Seek> Read for Chd<T> {
@@ -420,5 +478,13 @@ mod tests {
         assert_eq!(c.len(), 40_960_000);
         assert_eq!(c.seek(SeekFrom::Current(0)).unwrap(), 0);
         assert_eq!(c.seek(SeekFrom::End(0)).unwrap(), c.len());
+        let hunks = [
+            // 9,  // self
+            322,  // huffman
+            3999, // uncompressed
+        ];
+        for i in hunks.iter() {
+            c.validate_hunk(*i).unwrap();
+        }
     }
 }
