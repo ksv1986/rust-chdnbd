@@ -313,6 +313,7 @@ impl<T: Read + Seek> Chd<T> {
             match chd.header.compressors[i] {
                 0 => (),
                 CHD_CODEC_HUFF => *d = Some(Box::new(decompress::Huffman::new())),
+                CHD_CODEC_ZLIB | CHD_CODEC_CD_ZLIB => *d = Some(Box::new(decompress::Inflate::new())),
                 x => *d = Some(Box::new(decompress::Unknown::new(x))),
             }
         }
@@ -480,6 +481,7 @@ mod tests {
         assert_eq!(c.seek(SeekFrom::End(0)).unwrap(), c.len());
         let hunks = [
             // 9,  // self
+            63, // zlib
             322,  // huffman
             3999, // uncompressed
         ];

@@ -1,4 +1,7 @@
+extern crate inflate;
+
 use std::io;
+use std::io::Write;
 
 use crate::bitstream::BitReader;
 use crate::huffman;
@@ -50,5 +53,20 @@ impl Decompressor for Huffman {
             false => Ok(()),
             true => Err(invalid_data("compressed hunk is too small")),
         }
+    }
+}
+
+pub struct Inflate {
+}
+
+impl Inflate {
+    pub fn new() -> Self { Self {} }
+}
+
+impl Decompressor for Inflate {
+    fn decompress(&mut self, src: &[u8], dest: &mut [u8]) -> io::Result<()> {
+        let mut inflate = inflate::InflateWriter::new(dest);
+        inflate.write(&src)?;
+        Ok(())
     }
 }

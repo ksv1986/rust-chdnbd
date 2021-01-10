@@ -8,4 +8,5 @@ edition = "2018"
 
 [dependencies]
 crc16 = "0.4"
+inflate = "0.4"
 nbd = "0.2"
