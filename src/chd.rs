@@ -255,10 +255,8 @@ impl<T: Read + Seek> Chd<T> {
             return self.io.read_exact(self.map.as_mut_slice());
         }
 
-        self.io.seek(SeekFrom::Start(mapoffset))?;
-
         let mut maphdr = [0u8; 16];
-        self.io.read_exact(&mut maphdr)?;
+        self.read_at(mapoffset, &mut maphdr)?;
 
         let maplength = read_be32(&maphdr[0..4]);
         let lengthbits = read_bit_length(&maphdr, 12)?;
@@ -401,9 +399,7 @@ impl<T: Read + Seek> Chd<T> {
 
     fn read_header(&mut self) -> io::Result<()> {
         let mut data = [0u8; 124];
-
-        self.io.seek(SeekFrom::Start(0))?;
-        self.io.read_exact(&mut data)?;
+        self.read_at(0, &mut data)?;
 
         if &data[0..8] != b"MComprHD" {
             return Err(invalid_data("invalid magic"));
@@ -415,6 +411,11 @@ impl<T: Read + Seek> Chd<T> {
             V4 => self.read_header_v4(&data),
             _ => Err(invalid_data("unsupported version")),
         }
+    }
+
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.io.seek(SeekFrom::Start(offset))?;
+        self.io.read_exact(buf)
     }
 }
 
