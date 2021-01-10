@@ -98,6 +98,10 @@ fn read_bit_length(data: &[u8], offs: usize) -> io::Result<u8> {
     }
 }
 
+fn crc16(data: &[u8]) -> u16 {
+    crc16::State::<crc16::CCITT_FALSE>::calculate(data)
+}
+
 trait WriteBe {
     fn first_byte(&self) -> u8;
     fn shr_byte(&mut self);
@@ -360,7 +364,7 @@ impl<T: Read + Seek> Chd<T> {
             write_be16(&mut mapentry[10..12], crc);
         }
         let crc = read_be16(&maphdr[10..12]);
-        let calc = crc16::State::<crc16::CCITT_FALSE>::calculate(&self.map);
+        let calc = crc16(&self.map);
         if crc != calc {
             return Err(invalid_data("map decompression failed"));
         }
