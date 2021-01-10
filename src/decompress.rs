@@ -5,6 +5,7 @@ use std::io::Write;
 
 use crate::bitstream::BitReader;
 use crate::huffman;
+use crate::lzma::*;
 use crate::utils::*;
 
 pub trait Decompressor {
@@ -56,11 +57,12 @@ impl Decompressor for Huffman {
     }
 }
 
-pub struct Inflate {
-}
+pub struct Inflate {}
 
 impl Inflate {
-    pub fn new() -> Self { Self {} }
+    pub fn new() -> Self {
+        Self {}
+    }
 }
 
 impl Decompressor for Inflate {
@@ -68,5 +70,41 @@ impl Decompressor for Inflate {
         let mut inflate = inflate::InflateWriter::new(dest);
         inflate.write(&src)?;
         Ok(())
+    }
+}
+
+pub struct Lzma {
+    handle: usize,
+}
+
+impl Lzma {
+    pub fn new(hunkbytes: u32) -> io::Result<Self> {
+        let handle = unsafe { lzma_create(hunkbytes) };
+        match handle {
+            0 => Err(invalid_data("failed to create lzma decoder")),
+            _ => Ok(Self { handle }),
+        }
+    }
+}
+
+impl Drop for Lzma {
+    fn drop(&mut self) {
+        unsafe { lzma_destroy(self.handle) };
+    }
+}
+
+impl Decompressor for Lzma {
+    fn decompress(&mut self, src: &[u8], dest: &mut [u8]) -> io::Result<()> {
+        let error = unsafe {
+            let srclen = src.len() as u32;
+            let psrc = src.as_ptr();
+            let dstlen = dest.len() as u32;
+            let pdst = dest.as_mut_ptr();
+            lzma_decompress(self.handle, psrc, srclen, pdst, dstlen)
+        };
+        match error {
+            0 => Ok(()),
+            _ => Err(invalid_data("lzma decompression failed")),
+        }
     }
 }

@@ -5,8 +5,12 @@ authors = ["ksv1986 <ksv0x07c2@gmail.com>"]
 repository = "https://github.com/ksv1986/rchd-nbd"
 keywords = ["nbd", "network-block-device"]
 edition = "2018"
+build = "build.rs"
 
 [dependencies]
 crc16 = "0.4"
 inflate = "0.4"
 nbd = "0.2"
+
+[build-dependencies]
+cc = "1.0"

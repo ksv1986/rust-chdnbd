@@ -11,6 +11,7 @@ mod bitstream;
 mod chd;
 mod decompress;
 mod huffman;
+mod lzma;
 mod utils;
 
 use chd::Chd;
