@@ -26,7 +26,7 @@ impl Unknown {
 }
 
 impl Decompressor for Unknown {
-    fn decompress(&mut self, src: &[u8], dest: &mut [u8]) -> io::Result<()> {
+    fn decompress(&mut self, _src: &[u8], _dest: &mut [u8]) -> io::Result<()> {
         Err(invalid_data_owned(format!(
             "codec {:08x} not implemented",
             self.tag
