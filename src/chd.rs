@@ -2,7 +2,7 @@ extern crate crc16;
 
 use std::convert::TryFrom;
 use std::io;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 use crate::bitstream::BitReader;
 use crate::decompress;
@@ -287,12 +287,73 @@ impl Map5 {
     }
 }
 
+fn decompress_hunk<T: Read + Seek>(
+    io: &mut T,
+    offset: u64,
+    length: u32,
+    index: usize,
+    decompress: &mut [Option<Box<dyn Decompressor>>],
+    buf: &mut [u8],
+) -> io::Result<()> {
+    if decompress[index].is_some() {
+        let mut compbuf = vec![0; length as usize];
+        io.read_at(offset, compbuf.as_mut_slice())?;
+        decompress[index]
+            .as_deref_mut()
+            .unwrap()
+            .decompress(&compbuf, buf)
+    } else {
+        Err(invalid_data("no decompressor"))
+    }
+}
+
+fn read_hunk_at<T: Read + Seek>(
+    io: &mut T,
+    map: &dyn Map,
+    decompress: &mut [Option<Box<dyn Decompressor>>],
+    compression: u8,
+    offset: u64,
+    length: u32,
+    buf: &mut [u8],
+) -> io::Result<()> {
+    match compression {
+        COMPRESSION_NONE => io.read_at(offset, buf),
+        COMPRESSION_SELF => read_hunk(io, map, decompress, offset as usize, buf),
+        COMPRESSION_TYPE_0 | COMPRESSION_TYPE_1 | COMPRESSION_TYPE_2 | COMPRESSION_TYPE_3 => {
+            decompress_hunk(
+                io,
+                offset,
+                length,
+                (compression - COMPRESSION_TYPE_0) as usize,
+                decompress,
+                buf,
+            )
+        }
+        x => Err(invalid_data_owned(format!("unsupported compression {}", x))),
+    }
+}
+
+// read_hunk needs both Chd.io and Chd.cache mutable in Chd::read().
+// to satisfy borrow checker have to move it into free function
+fn read_hunk<T: Read + Seek>(
+    io: &mut T,
+    map: &dyn Map,
+    decompress: &mut [Option<Box<dyn Decompressor>>],
+    hunknum: usize,
+    buf: &mut [u8],
+) -> io::Result<()> {
+    let (compression, offset, length) = map.locate(hunknum);
+    read_hunk_at(io, map, decompress, compression, offset, length, buf)
+}
+
 pub struct Chd<T: Read + Seek> {
     pos: i64,
     io: T,
     header: Header,
     map: Box<dyn Map>,
     decompress: [Option<Box<dyn Decompressor>>; 4],
+    cache: Vec<u8>,
+    cachehunk: Option<usize>,
 }
 
 impl<T: Read + Seek> Chd<T> {
@@ -302,12 +363,15 @@ impl<T: Read + Seek> Chd<T> {
             V5 => Map5::read(&mut io, &header)?,
             _ => return Err(invalid_data("unsupported map version")),
         };
+        let hunkbytes = header.hunkbytes;
         let mut chd = Self {
             pos: 0,
             io,
             header,
             map: Box::new(map),
             decompress: [None, None, None, None],
+            cache: vec![0; hunkbytes as usize],
+            cachehunk: None,
         };
         for (i, d) in chd.decompress.iter_mut().enumerate() {
             match chd.header.compressors[i] {
@@ -317,7 +381,7 @@ impl<T: Read + Seek> Chd<T> {
                     *d = Some(Box::new(decompress::Inflate::new()))
                 }
                 CHD_CODEC_LZMA | CHD_CODEC_CD_LZMA => {
-                    *d = Some(Box::new(decompress::Lzma::new(chd.header.hunkbytes)?))
+                    *d = Some(Box::new(decompress::Lzma::new(hunkbytes)?))
                 }
                 CHD_CODEC_FLAC => *d = Some(Box::new(decompress::Flac::new())),
                 x => *d = Some(Box::new(decompress::Unknown::new(x))),
@@ -392,50 +456,14 @@ impl<T: Read + Seek> Chd<T> {
         distr
     }
 
-    fn decompress_hunk(
-        &mut self,
-        offset: u64,
-        length: u32,
-        index: usize,
-        buf: &mut [u8],
-    ) -> io::Result<()> {
-        if self.decompress[index].is_some() {
-            let mut compbuf = vec![0; length as usize];
-            self.io.read_at(offset, compbuf.as_mut_slice())?;
-            self.decompress[index]
-                .as_deref_mut()
-                .unwrap()
-                .decompress(&compbuf, buf)
-        } else {
-            Err(invalid_data("no decompressor"))
-        }
-    }
-
-    fn read_hunk_at(
-        &mut self,
-        compression: u8,
-        offset: u64,
-        length: u32,
-        buf: &mut [u8],
-    ) -> io::Result<()> {
-        match compression {
-            COMPRESSION_NONE => self.io.read_at(offset, buf),
-            COMPRESSION_SELF => self.read_hunk(offset as usize, buf),
-            COMPRESSION_TYPE_0 | COMPRESSION_TYPE_1 | COMPRESSION_TYPE_2 | COMPRESSION_TYPE_3 => {
-                self.decompress_hunk(
-                    offset,
-                    length,
-                    (compression - COMPRESSION_TYPE_0) as usize,
-                    buf,
-                )
-            }
-            x => Err(invalid_data_owned(format!("unsupported compression {}", x))),
-        }
-    }
-
     fn read_hunk(&mut self, hunknum: usize, buf: &mut [u8]) -> io::Result<()> {
-        let (compression, offset, length) = self.map.locate(hunknum);
-        self.read_hunk_at(compression, offset, length, buf)
+        read_hunk(
+            &mut self.io,
+            &mut *self.map,
+            &mut self.decompress,
+            hunknum,
+            buf,
+        )
     }
 
     fn validate_hunk(&mut self, hunknum: usize) -> io::Result<()> {
@@ -445,7 +473,15 @@ impl<T: Read + Seek> Chd<T> {
         }
 
         let mut buf = vec![0; self.header.hunkbytes as usize];
-        self.read_hunk_at(compression, offset, length, buf.as_mut_slice())?;
+        read_hunk_at(
+            &mut self.io,
+            &mut *self.map,
+            &mut self.decompress,
+            compression,
+            offset,
+            length,
+            &mut buf,
+        )?;
         match self.map.validate(hunknum, &buf) {
             true => Ok(()),
             false => Err(invalid_data("hunk validation failed")),
@@ -455,7 +491,60 @@ impl<T: Read + Seek> Chd<T> {
 
 impl<T: Read + Seek> Read for Chd<T> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        Err(io::Error::new(io::ErrorKind::Other, "not implemented"))
+        let hasbytes = self.header.size - self.pos as u64;
+        if hasbytes == 0 {
+            return Ok(0);
+        }
+
+        let mut dest = buf;
+        if hasbytes < dest.len() as u64 {
+            let (head, _) = dest.split_at_mut(hasbytes as usize);
+            dest = head;
+        }
+        let lastbyte = self.pos + dest.len() as i64 - 1;
+        let hunkbytes = self.header.hunkbytes as usize;
+        let hunkbytes64 = hunkbytes as i64;
+        let hunklast = hunkbytes - 1;
+
+        let first_hunk = (self.pos / hunkbytes64) as usize;
+        let last_hunk = (lastbyte / hunkbytes64) as usize;
+        let result = dest.len();
+
+        // iterate over hunks
+        for curhunk in first_hunk..=last_hunk {
+            // determine start/end boundaries
+            let startoffs = match curhunk == first_hunk {
+                true => (self.pos % hunkbytes64) as usize,
+                false => 0,
+            };
+            let endoffs = match curhunk == last_hunk {
+                true => (lastbyte % hunkbytes64) as usize,
+                false => hunklast as usize,
+            };
+            let length = endoffs + 1 - startoffs;
+            let (mut head, tail) = dest.split_at_mut(length);
+            dest = tail;
+
+            if startoffs == 0 && endoffs == hunklast && Some(curhunk) != self.cachehunk {
+                // if it's a full block, just read directly from disk unless it's the cached hunk
+                self.read_hunk(curhunk, head)?;
+            } else {
+                // otherwise, read from the cache
+                let cache = &mut self.cache;
+                if Some(curhunk) != self.cachehunk {
+                    read_hunk(
+                        &mut self.io,
+                        &mut *self.map,
+                        &mut self.decompress,
+                        curhunk,
+                        cache,
+                    )?;
+                    self.cachehunk = Some(curhunk);
+                }
+                head.write(&cache[startoffs..startoffs + length])?;
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -529,8 +618,30 @@ mod tests {
         for i in hunks.iter() {
             validate_hunk(&mut c, *i);
         }
-        for i in 0..c.hunk_count() as usize {
-            validate_hunk(&mut c, i);
+        //for i in 0..c.hunk_count() as usize {
+        //    validate_hunk(&mut c, i);
+        //}
+
+        let raw = include_bytes!("../raycris.raw");
+        let mut buf = vec![0; raw.len()];
+
+        let hunksize = c.hunk_size() as usize;
+        let fixtures = [
+            (1, 1),
+            (0, hunksize),
+            (0, hunksize - 1),
+            (0, 1),
+            (1, hunksize - 2),
+            (hunksize - 1, 2),
+            (hunksize - 1, hunksize + 2),
+            (0, c.len() as usize),
+        ];
+        for (offset, length) in fixtures.iter() {
+            let s = &raw[*offset..*offset + *length];
+            let d = &mut buf[..*length];
+            c.seek(SeekFrom::Start(*offset as u64)).unwrap();
+            c.read_exact(d).unwrap();
+            assert_eq!(s, d);
         }
     }
 }
