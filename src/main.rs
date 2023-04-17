@@ -57,10 +57,18 @@ impl<F: Read + Seek> Write for ChdWriter<F> {
 fn main() -> Result<()> {
     let path = std::env::args_os()
         .nth(1)
-        .expect("Usage: chdnbd <chd-file>");
+        .expect("Usage: chdnbd <chd-file> [chd-parent]");
 
+    let p = if let Some(parent_path) = std::env::args_os().nth(2) {
+        let pf = BufReader::new(File::open(parent_path)?);
+        let parent = Chd::open(pf, None)?;
+        println!("Using parent chd file:");
+        Some(Box::new(parent))
+    } else {
+        None
+    };
     let f = BufReader::new(File::open(path)?);
-    let chd = Chd::open(f, None)?;
+    let chd = Chd::open(f, p)?;
     let size = chd.header().logical_bytes();
 
     let reader = ChdReader::new(chd);
